@@ -46,10 +46,11 @@ namespace inet {
         TCPIllinoisStateVariables::TCPIllinoisStateVariables() {
             // init
             ssthresh = ULONG_MAX;
+            snd_cwnd_clamp = ~0; // set top limit to the maximum number allowed from an 32 bit int
             snd_cwnd = 2;
             w_RTTmin = 0x7fffffff;
             max_rtt = 0;
-            acked = 0;
+//            acked = 0;
             rtt_low = 0;
             rtt_above = 0;
             beta = BETA_BASE;
@@ -144,15 +145,16 @@ namespace inet {
             else {
                 uint32_t delta;
                 /* snd_cwnd_cnt is # of packets since last cwnd increment */
-//                state->snd_cwnd_cnt += state->acked;
-                state->acked = 1;
+                state->snd_cwnd_cnt++;
+//                state->acked = 1; // maybe not needed ??
+
                 /* This is close approximation of:
                  * tp->snd_cwnd += alpha/tp->snd_cwnd
                  */
-//                delta = (state->snd_cwnd_cnt * state->alpha) >> ALPHA_SHIFT;
+                delta = (state->snd_cwnd_cnt * state->alpha) >> ALPHA_SHIFT;
                 if (delta >= state->snd_cwnd) {
-//                    state->snd_cwnd = min(state->snd_cwnd + delta / state->snd_cwnd, state->snd_cwnd_clamp);
-//                    state->snd_cwnd_cnt = 0;
+                    state->snd_cwnd = std::min(state->snd_cwnd + delta / state->snd_cwnd, state->snd_cwnd_clamp);
+                    state->snd_cwnd_cnt = 0;
                 }
 
                 if (cwndVector) {
@@ -256,8 +258,9 @@ namespace inet {
                 state->beta = BETA_BASE;
             }
             else if (state->cnt_rtt > 0) {
-                UINT32 dm = (state->max_rtt - state->base_rtt);
-                UINT32 da = (state->sum_rtt / state->cnt_rtt); // was using do_div??
+            	//TODO: Figure out max_rtt and sum_rtt
+                uint32_t dm = (state->max_rtt - state->base_rtt);
+                uint32_t da = (state->sum_rtt / state->cnt_rtt); // was using do_div??
                 state->alpha = alpha(state, da, dm);
                 state->beta = beta(da, dm);
             }
@@ -282,8 +285,8 @@ namespace inet {
         *
         * The result is a convex window growth curve.
         */
-        UINT32 TCPIllinois::alpha(TCPIllinoisStateVariables *& state, uint32_t da, uint32_t dm) {
-            UINT32 d1 = dm / 100;
+        uint32_t TCPIllinois::alpha(TCPIllinoisStateVariables *& state, uint32_t da, uint32_t dm) {
+            uint32_t d1 = dm / 100;
 
             if (da <= d1) {
                 /* If never got out of low delay zone, then use max */
@@ -329,8 +332,8 @@ namespace inet {
         * If delay is up to 80% of max then beta = 1/2
         * In between is a linear function
         */
-        UINT32 TCPIllinois::beta(uint32_t da, uint32_t dm) {
-            UINT32 d2, d3;
+        uint32_t TCPIllinois::beta(uint32_t da, uint32_t dm) {
+            uint32_t d2, d3;
             d2 = dm / 10;
 
             if (da <= d2) { return BETA_MIN; }

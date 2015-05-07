@@ -1,10 +1,3 @@
-/*
- * TCPIllinois.h
- *
- *  Created on: 3 Apr 2015
- *      Author: Seva
- */
-
 #ifndef TCPILLINOIS_H_
 #define TCPILLINOIS_H_
 
@@ -26,19 +19,21 @@ namespace inet {
             virtual std::string info() const override;
             virtual std::string detailedInfo() const override;
 
-            uint32 ssthresh;        /* < slow start threshold */
             simtime_t   w_RTTmin;  /* min RTT */
 
-            uint64      sum_rtt;   /* sum of rtt's measured within last rtt */
-            uint16      cnt_rtt;   /* # of rtts measured within last rtt */
-            uint32      base_rtt;  /* min of all rtt in usec */
-            uint32      max_rtt;   /* max of all rtt in usec */
-            uint32      end_seq;   /* right edge of current RTT */
-            uint32      alpha;     /* Additive increase */
-            uint32      beta;      /* Muliplicative decrease */
-            uint16      acked;     /* # packets acked by current ACK */
-            uint8       rtt_above; /* average rtt has gone above threshold */
-            uint8       rtt_low;   /* # of rtts measurements below threshold */
+            uint64_t    sum_rtt;   /* sum of rtt's measured within last rtt */
+            uint64_t    snd_cwnd_cnt; /* # of packets since last cwnd increment */
+            uint64_t    ssthresh;        /* < slow start threshold */
+            uint32_t    snd_cwnd_clamp; /* congestion window top limit */
+            uint32_t    base_rtt;  /* min of all rtt in usec */
+            uint32_t    max_rtt;   /* max of all rtt in usec */
+            uint32_t    end_seq;   /* right edge of current RTT */
+            uint32_t    alpha;     /* Additive increase */
+            uint32_t    beta;      /* Muliplicative decrease */
+//            uint16_t    acked;     /* # packets acked by current ACK */
+            uint16_t    cnt_rtt;   /* # of rtts measured within last rtt */
+            uint8_t     rtt_above; /* average rtt has gone above threshold */
+            uint8_t     rtt_low;   /* # of rtts measurements below threshold */
 
             simtime_t w_lastAckTime;    /* last received ack time */
 
@@ -76,9 +71,9 @@ namespace inet {
 
           virtual void segmentRetransmitted(uint32 fromseq, uint32 toseq) override;
 
-          virtual UINT32 alpha(TCPIllinoisStateVariables *& state, uint32_t da, uint32_t dm);
+          virtual uint32_t alpha(TCPIllinoisStateVariables *& state, uint32_t da, uint32_t dm);
 
-          virtual UINT32 beta(uint32_t da, uint32_t dm);
+          virtual uint32_t beta(uint32_t da, uint32_t dm);
 
           virtual void update_params(TCPIllinoisStateVariables *& state);
 
