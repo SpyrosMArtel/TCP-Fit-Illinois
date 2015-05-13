@@ -27,7 +27,7 @@
 #define ALPHA_MIN       ((3 * ALPHA_SCALE) / 10 ) /* ~0.3 */
 #define ALPHA_MAX       ( 10 * ALPHA_SCALE ) /* 10.0 */
 #define ALPHA_BASE      ALPHA_SCALE /* 1.0 */
-#define RTT_MAX         (U32_MAX / ALPHA_MAX) /* 3.3 secs */
+#define RTT_MAX         (UINT32_MAX / ALPHA_MAX) /* 3.3 secs */
 
 #define BETA_SHIFT      6
 #define BETA_SCALE      (1u << BETA_SHIFT)
@@ -46,15 +46,16 @@ namespace inet {
         TCPIllinoisStateVariables::TCPIllinoisStateVariables() {
             // init
             ssthresh = ULONG_MAX;
-            snd_cwnd_clamp = ~0; // set top limit to the maximum number allowed from an 32 bit int
+            snd_cwnd_clamp = UINT32_MAX; // set top limit to the maximum number allowed from an 32 bit int
             snd_cwnd = 2;
-            w_RTTmin = 0x7fffffff;
+            base_rtt = 0x7fffffff;
+            cnt_rtt = 0;
             max_rtt = 0;
-//            acked = 0;
             rtt_low = 0;
             rtt_above = 0;
             beta = BETA_BASE;
             alpha = ALPHA_MAX;
+            sum_rtt = 0;
         }
 
         TCPIllinoisStateVariables::~TCPIllinoisStateVariables() {
@@ -71,7 +72,7 @@ namespace inet {
             std::stringstream out;
             out << TCPIllinoisStateVariables::detailedInfo();
             out << "ssthresh = " << ssthresh << "\n";
-            out << "w_RTTmin = " << w_RTTmin << "\n";
+            out << "minRTT = " << base_rtt << "\n";
             return out.str();
         }
 
@@ -126,7 +127,39 @@ namespace inet {
         void TCPIllinois::receivedDataAck(uint32 firstSeqAcked) {
             TCPBaseAlg::receivedDataAck(firstSeqAcked);
 
-            update_params(state);
+            const TCPSegmentTransmitInfoList::Item *found = state->regions.get(firstSeqAcked);
+            state->regions.clearTo(state->snd_una);
+
+            if (found != nullptr) {
+                simtime_t currentTime = simTime();
+                simtime_t newRTT = currentTime - found->getFirstSentTime();
+
+                /* ignore bogus values, this prevents wraparound in alpha math */
+                if (newRTT > RTT_MAX){
+                    newRTT = RTT_MAX;
+                }
+
+                // Update min RTT
+                if (state->base_rtt > newRTT) {
+                    state->base_rtt = newRTT;
+                }
+                // update max RTT
+                if (state->max_rtt < newRTT) {
+                    state->max_rtt = newRTT;
+                }
+                ++state->cnt_rtt;
+                state->sum_rtt += newRTT.dbl();
+            }
+
+            /* How the update_params(state) should be invoked? */
+
+            // if (after(ack, state->end_seq)) {
+            //      update_params(state);
+            // }
+            // OR better
+            // if (( ack - state->end_seq ) < 0) {
+            //      update_params(state);
+            // }
 
             //
             // Perform slow start (like TCP NewReno) and congestion avoidance.
@@ -258,9 +291,10 @@ namespace inet {
                 state->beta = BETA_BASE;
             }
             else if (state->cnt_rtt > 0) {
-            	//TODO: Figure out max_rtt and sum_rtt
-                uint32_t dm = (state->max_rtt - state->base_rtt);
-                uint32_t da = (state->sum_rtt / state->cnt_rtt); // was using do_div??
+                // calculate max delay
+            	uint32_t dm = (state->max_rtt.raw() - state->base_rtt.raw()); // check if good?
+                // calculate delay average
+            	uint32_t da = (state->sum_rtt / state->cnt_rtt); // was using do_div??
                 state->alpha = alpha(state, da, dm);
                 state->beta = beta(da, dm);
             }

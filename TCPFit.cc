@@ -31,7 +31,7 @@ namespace inet {
             // init
             ssthresh = ULONG_MAX;
             snd_cwnd = 2;
-            w_RTTmin = 0;
+            w_RTTmin = 0x7fffffff;
             RTT_cnt = 0;
             ACK_cnt = 0;
             epoch_start = simTime();
