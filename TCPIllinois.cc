@@ -45,7 +45,7 @@ namespace inet {
 
         TCPIllinoisStateVariables::TCPIllinoisStateVariables() {
             // init
-            ssthresh = ULONG_MAX;
+            ssthresh = 15; //UINT32_MAX;
             snd_cwnd_clamp = UINT32_MAX; // set top limit to the maximum number allowed from an 32 bit int
             snd_cwnd = 2;
             base_rtt = 0x7fffffff;
@@ -56,6 +56,7 @@ namespace inet {
             beta = BETA_BASE;
             alpha = ALPHA_MAX;
             sum_rtt = 0;
+            end_seq = 0;
         }
 
         TCPIllinoisStateVariables::~TCPIllinoisStateVariables() {
@@ -63,14 +64,14 @@ namespace inet {
 
         std::string TCPIllinoisStateVariables::info() const {
             std::stringstream out;
-            out << TCPIllinoisStateVariables::info();
+            out << TCPBaseAlgStateVariables::info();
             out << " ssthresh=" << ssthresh;
             return out.str();
         }
 
         std::string TCPIllinoisStateVariables::detailedInfo() const {
             std::stringstream out;
-            out << TCPIllinoisStateVariables::detailedInfo();
+            out << TCPBaseAlgStateVariables::detailedInfo();
             out << "ssthresh = " << ssthresh << "\n";
             out << "minRTT = " << base_rtt << "\n";
             return out.str();
@@ -83,10 +84,9 @@ namespace inet {
 
         void TCPIllinois::recalculateSlowStartThreshold() { // like TCP NewReno
             EV_DEBUG << "recalculateSlowStartThreshold(), ssthresh=" << state->ssthresh << "\n";
-            // RFC 2581, page 4:
-            uint32 flight_size = std::min(state->snd_cwnd, state->snd_wnd);
-            // uint32 flight_size = state->snd_max - state->snd_una;
-            state->ssthresh = std::max(flight_size / 2, 2 * state->snd_mss);
+
+            /* a different slow start calculation */
+            state->ssthresh = std::max((state->snd_cwnd * state->beta) >> BETA_SHIFT, 2U);
 
             if (ssthreshVector) {
                 ssthreshVector->record(state->ssthresh);
@@ -95,20 +95,17 @@ namespace inet {
 
         void TCPIllinois::processRexmitTimer(TCPEventCode& event) {
             TCPBaseAlg::processRexmitTimer(event);
-
             if (event == TCP_E_ABORT)
                 return;
 
             // RFC 3782, page 6:
             // "6)  Retransmit timeouts:
 
-/* should those be kept?
             state->recover = (state->snd_max - 1);
             EV_INFO << "recover=" << state->recover << "\n";
             state->lossRecovery = false;
             state->firstPartialACK = false;
             EV_INFO << "Loss Recovery terminated.\n";
-*/
 
             // begin Slow Start (RFC 2581)
             recalculateSlowStartThreshold();
@@ -126,11 +123,9 @@ namespace inet {
 
         void TCPIllinois::receivedDataAck(uint32 firstSeqAcked) {
             TCPBaseAlg::receivedDataAck(firstSeqAcked);
-
             const TCPSegmentTransmitInfoList::Item *found = state->regions.get(firstSeqAcked);
-            state->regions.clearTo(state->snd_una);
 
-            if (found != nullptr) {
+            if (found != nullptr) { // update min and max rtt
                 simtime_t currentTime = simTime();
                 simtime_t newRTT = currentTime - found->getFirstSentTime();
 
@@ -151,83 +146,123 @@ namespace inet {
                 state->sum_rtt += newRTT.dbl();
             }
 
-            /* How the update_params(state) should be invoked? */
+            state->acked = state->snd_una - firstSeqAcked;
 
-            // if (after(ack, state->end_seq)) {
-            //      update_params(state);
-            // }
-            // OR better
-            // if (( ack - state->end_seq ) < 0) {
-            //      update_params(state);
-            // }
+            // same behaviour as TCP-NewReno's fast recovery and retransmit
+            if (state->lossRecovery) {
+                if (seqGE(state->snd_una - 1, state->recover)) {
+                    uint32 flight_size = state->snd_max - state->snd_una;
+                    state->snd_cwnd = std::min(state->ssthresh, flight_size + state->snd_mss);
+                    EV_INFO << "Fast Recovery - Full ACK received: Exit Fast Recovery, setting cwnd to " << state->snd_cwnd << "\n";
+                    if (cwndVector)
+                        cwndVector->record(state->snd_cwnd);
 
-            //
-            // Perform slow start (like TCP NewReno) and congestion avoidance.
-            //
-            if (state->snd_cwnd <= state->ssthresh) {
-                EV_DETAIL << "cwnd <= ssthresh: Slow Start: increasing cwnd by SMSS bytes to ";
-
-                state->snd_cwnd += state->snd_mss;
-
-                if (cwndVector) {
-                    cwndVector->record(state->snd_cwnd);
+                    // to be added: TCP-Illinois in case of loss reset alpha and beta...
+                    state->lossRecovery = false;
+                    state->firstPartialACK = false;
+                    EV_INFO << "Loss Recovery terminated.\n";
                 }
+                else {
+                    EV_INFO << "Fast Recovery - Partial ACK received: retransmitting the first unacknowledged segment\n";
+                    // retransmit first unacknowledged segment
+                    conn->retransmitOneSegment(false);
 
-                EV_DETAIL << "cwnd=" << state->snd_cwnd << "\n";
+                    // deflate cwnd by amount of new data acknowledged by cumulative acknowledgement field
+                    state->snd_cwnd -= state->snd_una - firstSeqAcked;
+
+                    if (cwndVector)
+                        cwndVector->record(state->snd_cwnd);
+
+                    EV_INFO << "Fast Recovery: deflating cwnd by amount of new data acknowledged, new cwnd=" << state->snd_cwnd << "\n";
+
+                    // if the partial ACK acknowledges at least one SMSS of new data, then add back SMSS bytes to the cwnd
+                    if (state->snd_una - firstSeqAcked >= state->snd_mss) {
+                        state->snd_cwnd += state->snd_mss;
+
+                        if (cwndVector)
+                            cwndVector->record(state->snd_cwnd);
+
+                        EV_DETAIL << "Fast Recovery: inflating cwnd by SMSS, new cwnd=" << state->snd_cwnd << "\n";
+                    }
+
+                    // try to send a new segment if permitted by the new value of cwnd
+                    sendData(false);
+
+                    // reset REXMIT timer for the first partial ACK that arrives during Fast Recovery
+                    if (state->lossRecovery) {
+                        if (!state->firstPartialACK) {
+                            state->firstPartialACK = true;
+                            EV_DETAIL << "First partial ACK arrived during recovery, restarting REXMIT timer.\n";
+                            restartRexmitTimer();
+                        }
+                    }
+                }
             }
             else {
-                uint32_t delta;
-                /* snd_cwnd_cnt is # of packets since last cwnd increment */
-                state->snd_cwnd_cnt++;
-//                state->acked = 1; // maybe not needed ??
+                /* TCP-Illinois implementation checks with if (after(ack, state->end_seq)) {
+                 * if the ACK was invalid or for data not sent yet, and update its parameters...
+                 * the ack in the Linux implementation stands for "segment ack number" or SEG.ACK.
+                 * (RFC793 Section 3.9, p. 72)
+                 * However the update_params mention that it would be invoked every RTT. Nevertheless,
+                 * the code seems to be working as it is at this state. Some verification might be needed.
+                 * A candidate function in OMNeT is receivedAckForDataNotYetSent(...).
+                 * */
+                update_params(state);
+                //
+                // Perform slow start (TCP NewReno) and congestion avoidance.
+                //
+                if (state->snd_cwnd <= state->ssthresh) {
+                    EV_DETAIL << "cwnd <= ssthresh: Slow Start: increasing cwnd by SMSS bytes to ";
 
-                /* This is close approximation of:
-                 * tp->snd_cwnd += alpha/tp->snd_cwnd
-                 */
-                delta = (state->snd_cwnd_cnt * state->alpha) >> ALPHA_SHIFT;
-                if (delta >= state->snd_cwnd) {
-                    state->snd_cwnd = std::min(state->snd_cwnd + delta / state->snd_cwnd, state->snd_cwnd_clamp);
-                    state->snd_cwnd_cnt = 0;
-                }
+                    state->snd_cwnd += state->snd_mss;
+                    if (cwndVector) {
+                        cwndVector->record(state->snd_cwnd);
+                    }
 
-                if (cwndVector) {
-                    cwndVector->record(state->snd_cwnd);
+                    EV_DETAIL << "cwnd=" << state->snd_cwnd << "\n";
                 }
+                else {
+                    uint32_t delta;
+                    state->snd_cwnd_cnt += state->acked; /* # of packets since last cwnd increment */
+                    state->acked = 1;
+
+                    delta = (state->snd_cwnd_cnt * state->alpha) >> ALPHA_SHIFT;
+                    if (delta >= state->snd_cwnd) {
+                        state->snd_cwnd = std::min(state->snd_cwnd + delta / state->snd_cwnd, state->snd_cwnd_clamp);
+                        state->snd_cwnd_cnt = 0;
+                    }
+
+                    if (cwndVector) {
+                        cwndVector->record(state->snd_cwnd);
+                    }
+                    EV_DETAIL << "TCP Illinois cwnd > ssthresh: Congestion Avoidance: increasing cwnd, to " << state->snd_cwnd << "\n";
+                }
+                state->recover = (state->snd_una - 2);
             }
+            state->regions.clearTo(state->snd_una);
+            sendData(false);
         }
 
-        void TCPIllinois::receivedDuplicateAck() { // like TCP NewReno impl.
+        void TCPIllinois::receivedDuplicateAck() {
             TCPBaseAlg::receivedDuplicateAck();
 
             if (state->dupacks == DUPTHRESH) {    // DUPTHRESH = 3
                 if (!state->lossRecovery) {
-                    // RFC 3782, page 4:
-                    // "1) Three duplicate ACKs:
-                    // When the third duplicate ACK is received and the sender is not
-                    // already in the Fast Recovery procedure, check to see if the
-                    // Cumulative Acknowledgement field covers more than "recover".  If
-                    // so, go to Step 1A.  Otherwise, go to Step 1B."
-                    //
-                    // RFC 3782, page 6:
-                    // "Step 1 specifies a check that the Cumulative Acknowledgement field
-                    // covers more than "recover".  Because the acknowledgement field
-                    // contains the sequence number that the sender next expects to receive,
-                    // the acknowledgement "ack_number" covers more than "recover" when:
-                    //      ack_number - 1 > recover;"
+                    // RFC 3782, page 4: 1) Three duplicate ACKs:
                     if (state->snd_una - 1 > state->recover) {
+                        // is this where we detect loss?
+                        reset_state(state);
+
                         EV_INFO << "TCP Illinois on dupAcks == DUPTHRESH(=3): perform Fast Retransmit, and enter Fast Recovery:";
 
-                        // RFC 3782, page 4:
-                        // "1A) Invoking Fast Retransmit:
-
+                        // RFC 3782, page 4: 1A) Invoking Fast Retransmit:
                         recalculateSlowStartThreshold();
                         state->recover = (state->snd_max - 1);
                         state->firstPartialACK = false;
                         state->lossRecovery = true;
                         EV_INFO << " set recover=" << state->recover;
 
-                        // RFC 3782, page 4:
-                        // "2) Entering Fast Retransmit:
+                        // RFC 3782, page 4: 2) Entering Fast Retransmit:
                         state->snd_cwnd = state->ssthresh + 3 * state->snd_mss;
 
                         if (cwndVector) {
@@ -237,22 +272,19 @@ namespace inet {
                         EV_DETAIL << " , cwnd=" << state->snd_cwnd << ", ssthresh=" << state->ssthresh << "\n";
                         conn->retransmitOneSegment(false);
 
-                        // RFC 3782, page 5:
-                        // "4) Fast Recovery, continued:
+                        // RFC 3782, page 5: 4) Fast Recovery, continued:
                         sendData(false);
                     }
                     else {
                         EV_INFO << "TCP Illinois on dupAcks == DUPTHRESH(=3): not invoking Fast Retransmit and Fast Recovery\n";
-                        // RFC 3782, page 4:
-                        // "1B) Not invoking Fast Retransmit:
+                        // RFC 3782, page 4: 1B) Not invoking Fast Retransmit:
                     }
                 }
                 EV_INFO << "TCP Illinois on dupAcks == DUPTHRESH(=3): TCP is already in Fast Recovery procedure\n";
             }
             else if (state->dupacks > DUPTHRESH) {    // DUPTHRESH = 3
                 if (state->lossRecovery) {
-                    // RFC 3782, page 4:
-                    // "3) Fast Recovery:
+                    // RFC 3782, page 4: 3) Fast Recovery:
                     state->snd_cwnd += state->snd_mss;
 
                     if (cwndVector)
@@ -260,8 +292,7 @@ namespace inet {
 
                     EV_DETAIL << "TCP Illinois on dupAcks > DUPTHRESH(=3): Fast Recovery: inflating cwnd by SMSS, new cwnd=" << state->snd_cwnd << "\n";
 
-                    // RFC 3782, page 5:
-                    // "4) Fast Recovery, continued:
+                    // RFC 3782, page 5: 4) Fast Recovery, continued:
                     sendData(false);
                 }
             }
@@ -284,6 +315,15 @@ namespace inet {
             state->regions.set(fromseq, toseq, simTime());
         }
 
+        /* Reset the state to default on loss*/
+        void TCPIllinois::reset_state(TCPIllinoisStateVariables *& state) {
+            state->alpha = ALPHA_BASE;
+            state->beta = BETA_BASE;
+            state->rtt_low = 0;
+            state->rtt_above = 0;
+            rtt_reset(state);
+        }
+
         /* Update alpha and beta values once per RTT */
         void TCPIllinois::update_params(TCPIllinoisStateVariables *& state) {
             if (state->snd_cwnd < state->ssthresh) {
@@ -294,7 +334,7 @@ namespace inet {
                 // calculate max delay
             	uint32_t dm = (state->max_rtt.raw() - state->base_rtt.raw()); // check if good?
                 // calculate delay average
-            	uint32_t da = (state->sum_rtt / state->cnt_rtt); // was using do_div??
+            	uint32_t da = (state->sum_rtt / state->cnt_rtt) - state->base_rtt.dbl();
                 state->alpha = alpha(state, da, dm);
                 state->beta = beta(da, dm);
             }
@@ -302,7 +342,7 @@ namespace inet {
         }
 
         void TCPIllinois::rtt_reset(TCPIllinoisStateVariables *& state) {
-//            state->end_seq = tp->snd_nxt;
+            state->end_seq = state->snd_nxt;
             state->cnt_rtt = 0;
             state->sum_rtt = 0;
         }

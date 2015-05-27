@@ -21,15 +21,15 @@ namespace inet {
 
             uint32 ssthresh;        /* < slow start threshold */
             simtime_t w_RTTmin;     /* min RTT */
-            simtime_t epoch_start;  /* dunno */
-            simtime_t update_epoch;  /* dunno */
+            simtime_t epoch_start;  /* when an update occurred  */
+            simtime_t update_epoch; /* update interval for N */
             double alpha;           /* Additive increase */
             double beta;            /* Muliplicative decrease */
             double n;               /* tcp-fit n parameter */
             double cwnd_cnt;        /* Congestion window counter. */
-            simtime_t RTT_cnt;         /* rtt counter */
+            simtime_t RTT_cnt;      /* rtt counter */
             uint32 ACK_cnt;         /* ACK counter */
-            simtime_t avgRTT;          /* average Round Trip time; */
+            simtime_t avgRTT;       /* average Round Trip time; */
 
             simtime_t w_lastAckTime;    // last received ack time
 

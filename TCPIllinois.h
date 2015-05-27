@@ -23,15 +23,17 @@ namespace inet {
             simtime_t	max_rtt;   /* max of all rtt in usec */
 
             uint64_t    sum_rtt;   /* sum of rtt's measured within last rtt */
-            uint64_t    snd_cwnd_cnt; /* # of packets since last cwnd increment */
-            uint64_t    ssthresh;        /* < slow start threshold */
+            uint32_t    snd_cwnd_cnt; /* # of packets since last cwnd increment */
             uint32_t    snd_cwnd_clamp; /* congestion window top limit */
+            uint32_t    ssthresh;        /* < slow start threshold */
             uint32_t    end_seq;   /* right edge of current RTT */
             uint32_t    alpha;     /* Additive increase */
             uint32_t    beta;      /* Muliplicative decrease */
             uint16_t    cnt_rtt;   /* # of rtts measured within last rtt */
+            uint16_t    acked;     /* # of packets acked by current ACK */
             uint8_t     rtt_above; /* average rtt has gone above threshold */
             uint8_t     rtt_low;   /* # of rtts measurements below threshold */
+
 
             simtime_t w_lastAckTime;    /* last received ack time */
 
@@ -69,6 +71,8 @@ namespace inet {
 
           virtual void segmentRetransmitted(uint32 fromseq, uint32 toseq) override;
 
+          virtual void receivedAckForDataNotYetSent(uint32 seq) override;
+
           virtual uint32_t alpha(TCPIllinoisStateVariables *& state, uint32_t da, uint32_t dm);
 
           virtual uint32_t beta(uint32_t da, uint32_t dm);
@@ -76,6 +80,7 @@ namespace inet {
           virtual void update_params(TCPIllinoisStateVariables *& state);
 
           virtual void rtt_reset(TCPIllinoisStateVariables *& state);
+          virtual void reset_state(TCPIllinoisStateVariables *& state); /* reset the state after loss*/
 
         private:
           simtime_t currentTime; // current time in simulation
