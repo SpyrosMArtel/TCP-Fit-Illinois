@@ -19,8 +19,11 @@ namespace inet {
             virtual std::string info() const override;
             virtual std::string detailedInfo() const override;
 
+            TCPSegmentTransmitInfoList regions;
+
             simtime_t   base_rtt;   /* min of all rtt in usec */
             simtime_t	max_rtt;   /* max of all rtt in usec */
+            simtime_t   w_lastAckTime;    /* last received ack time */
 
             uint64_t    sum_rtt;   /* sum of rtt's measured within last rtt */
             uint32_t    snd_cwnd_cnt; /* # of packets since last cwnd increment */
@@ -33,11 +36,6 @@ namespace inet {
             uint16_t    acked;     /* # of packets acked by current ACK */
             uint8_t     rtt_above; /* average rtt has gone above threshold */
             uint8_t     rtt_low;   /* # of rtts measurements below threshold */
-
-
-            simtime_t w_lastAckTime;    /* last received ack time */
-
-            TCPSegmentTransmitInfoList regions;
 
         private:
         };
@@ -71,11 +69,9 @@ namespace inet {
 
           virtual void segmentRetransmitted(uint32 fromseq, uint32 toseq) override;
 
-          virtual void receivedAckForDataNotYetSent(uint32 seq) override;
+          virtual uint32_t alpha(TCPIllinoisStateVariables *& state, double da, double dm);
 
-          virtual uint32_t alpha(TCPIllinoisStateVariables *& state, uint32_t da, uint32_t dm);
-
-          virtual uint32_t beta(uint32_t da, uint32_t dm);
+          virtual uint32_t beta(double da, double dm);
 
           virtual void update_params(TCPIllinoisStateVariables *& state);
 

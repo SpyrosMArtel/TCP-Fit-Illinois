@@ -48,6 +48,8 @@ namespace inet {
             ssthresh = 15; //UINT32_MAX;
             snd_cwnd_clamp = UINT32_MAX; // set top limit to the maximum number allowed from an 32 bit int
             snd_cwnd = 2;
+            snd_cwnd_cnt = 0;
+            acked = 0;
             base_rtt = 0x7fffffff;
             cnt_rtt = 0;
             max_rtt = 0;
@@ -146,7 +148,7 @@ namespace inet {
                 state->sum_rtt += newRTT.dbl();
             }
 
-            state->acked = state->snd_una - firstSeqAcked;
+            state->regions.clearTo(state->snd_una);
 
             // same behaviour as TCP-NewReno's fast recovery and retransmit
             if (state->lossRecovery) {
@@ -199,15 +201,10 @@ namespace inet {
                 }
             }
             else {
-                /* TCP-Illinois implementation checks with if (after(ack, state->end_seq)) {
-                 * if the ACK was invalid or for data not sent yet, and update its parameters...
-                 * the ack in the Linux implementation stands for "segment ack number" or SEG.ACK.
-                 * (RFC793 Section 3.9, p. 72)
-                 * However the update_params mention that it would be invoked every RTT. Nevertheless,
-                 * the code seems to be working as it is at this state. Some verification might be needed.
-                 * A candidate function in OMNeT is receivedAckForDataNotYetSent(...).
-                 * */
-                update_params(state);
+                /* Once per RTT...*/
+                if (seqGreater(state->snd_una, state->end_seq)) {
+                    update_params(state);
+                }
                 //
                 // Perform slow start (TCP NewReno) and congestion avoidance.
                 //
@@ -223,12 +220,17 @@ namespace inet {
                 }
                 else {
                     uint32_t delta;
+                    if (state->acked == 0) {
+                        state->acked = 1;
+                    }
+
                     state->snd_cwnd_cnt += state->acked; /* # of packets since last cwnd increment */
                     state->acked = 1;
+//                    state->acked = state->snd_una - firstSeqAcked;
 
                     delta = (state->snd_cwnd_cnt * state->alpha) >> ALPHA_SHIFT;
                     if (delta >= state->snd_cwnd) {
-                        state->snd_cwnd = std::min(state->snd_cwnd + delta / state->snd_cwnd, state->snd_cwnd_clamp);
+                        state->snd_cwnd = std::min((state->snd_cwnd + delta) / state->snd_cwnd, state->snd_cwnd_clamp);
                         state->snd_cwnd_cnt = 0;
                     }
 
@@ -239,7 +241,6 @@ namespace inet {
                 }
                 state->recover = (state->snd_una - 2);
             }
-            state->regions.clearTo(state->snd_una);
             sendData(false);
         }
 
@@ -312,6 +313,7 @@ namespace inet {
         void TCPIllinois::segmentRetransmitted(uint32 fromseq, uint32 toseq) {
             TCPBaseAlg::segmentRetransmitted(fromseq, toseq);
 
+            state->regions.clearTo(state->snd_una);
             state->regions.set(fromseq, toseq, simTime());
         }
 
@@ -332,9 +334,9 @@ namespace inet {
             }
             else if (state->cnt_rtt > 0) {
                 // calculate max delay
-            	uint32_t dm = (state->max_rtt.raw() - state->base_rtt.raw()); // check if good?
+            	double dm = state->max_rtt.dbl() - state->base_rtt.dbl(); // check if good?
                 // calculate delay average
-            	uint32_t da = (state->sum_rtt / state->cnt_rtt) - state->base_rtt.dbl();
+            	double da = (state->sum_rtt / state->cnt_rtt) - state->base_rtt.dbl();
                 state->alpha = alpha(state, da, dm);
                 state->beta = beta(da, dm);
             }
@@ -359,8 +361,8 @@ namespace inet {
         *
         * The result is a convex window growth curve.
         */
-        uint32_t TCPIllinois::alpha(TCPIllinoisStateVariables *& state, uint32_t da, uint32_t dm) {
-            uint32_t d1 = dm / 100;
+        uint32_t TCPIllinois::alpha(TCPIllinoisStateVariables *& state, double da, double dm) {
+            double d1 = dm / 100;
 
             if (da <= d1) {
                 /* If never got out of low delay zone, then use max */
@@ -406,8 +408,8 @@ namespace inet {
         * If delay is up to 80% of max then beta = 1/2
         * In between is a linear function
         */
-        uint32_t TCPIllinois::beta(uint32_t da, uint32_t dm) {
-            uint32_t d2, d3;
+        uint32_t TCPIllinois::beta(double da, double dm) {
+            double d2, d3;
             d2 = dm / 10;
 
             if (da <= d2) { return BETA_MIN; }
