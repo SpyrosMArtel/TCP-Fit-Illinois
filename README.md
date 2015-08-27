@@ -5,4 +5,6 @@ TCP-Fit was implemented by following the pseudocode and some of the recommendati
 
 TCP-Illinois is a port from the Linux kernel implementation at: http://lxr.free-electrons.com/source/net/ipv4/tcp_illinois.c
 
-Be advised, both mechanisms are quite far from complete, but work is in progress...
+Both mechanisms reached the final stage, yet use them with caution.
+
+Have fun and keep coding!
